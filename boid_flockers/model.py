@@ -10,77 +10,80 @@ import numpy as np
 
 
 class Boid(mesa.Agent):
-    """
-    A Boid-style flocker agent.
-
-    The agent follows three behaviors to flock:
-        - Cohesion: steering towards neighboring agents.
-        - Separation: avoiding getting too close to any other agent.
-        - Alignment: try to fly in the same direction as the neighbors.
-
-    Boids have a vision that defines the radius in which they look for their
-    neighbors to flock with. Their speed (a scalar) and direction (a vector)
-    define their movement. Separation is their desired minimum distance from
-    any other Boid.
-    """
-
     def __init__(
-        self,
-        unique_id,
-        model,
-        speed,
-        direction,
-        vision,
-        separation,
-        cohere=0.03,
-        separate=0.015,
-        match=0.05,
+            self,
+            unique_id,
+            model,
+            speed,
+            direction,
+            vision,
+            separation,
+            max_speed=1,
+            noise_factor=0.1,
+            crowd_radius=5,
+            cohesion_radius=10,
+            avoid_radius=5,
     ):
-        """
-        Create a new Boid flocker agent.
-
-        Args:
-            speed: Distance to move per step.
-            direction: numpy vector for the Boid's direction of movement.
-            vision: Radius to look around for nearby Boids.
-            separation: Minimum distance to maintain from other Boids.
-            cohere: the relative importance of matching neighbors' positions
-            separate: the relative importance of avoiding close neighbors
-            match: the relative importance of matching neighbors' headings
-        """
-        super().__init__(unique_id,model)
+        super().__init__(unique_id, model)
         self.speed = speed
         self.direction = direction
         self.vision = vision
         self.separation = separation
-        self.cohere_factor = cohere
-        self.separate_factor = separate
-        self.match_factor = match
+        self.max_speed = max_speed
+        self.noise_factor = noise_factor
+        self.crowd_radius = crowd_radius
+        self.cohesion_radius = cohesion_radius
+        self.avoid_radius = avoid_radius
         self.neighbors = None
 
     def step(self):
-        """
-        Get the Boid's neighbors, compute the new vector, and move accordingly.
-        """
-
         self.neighbors = self.model.space.get_neighbors(self.pos, self.vision, False)
-        n = 0
-        match_vector, separation_vector, cohere = np.zeros((3, 2))
-        for neighbor in self.neighbors:
-            n += 1
-            heading = self.model.space.get_heading(self.pos, neighbor.pos)
-            cohere += heading
-            if self.model.space.get_distance(self.pos, neighbor.pos) < self.separation:
-                separation_vector -= heading
-            match_vector += neighbor.direction
-        n = max(n, 1)
-        cohere = cohere * self.cohere_factor
-        separation_vector = separation_vector * self.separate_factor
-        match_vector = match_vector * self.match_factor
-        self.direction += (cohere + separation_vector + match_vector) / n
-        self.direction /= np.linalg.norm(self.direction)
-        new_pos = self.pos + self.direction * self.speed
+
+        align_vector = self.get_average_direction()
+
+        cohesion_vector = self.get_cohesion()
+        #додав шум, щоб агенти рухались не по одному і тому ж маршруту, а більш "живо"
+        noise_vector = np.random.rand(2) * 2 - 1
+
+        move_vector = align_vector + cohesion_vector + noise_vector * self.noise_factor
+
+        #обмеження швидкості, щоб навіть при великих параметрах швидкості агенти поводили себе адекватно
+        if np.linalg.norm(move_vector) > self.max_speed:
+            move_vector = (move_vector / np.linalg.norm(move_vector)) * self.max_speed
+
+        new_pos = self.pos + move_vector * self.speed
         self.model.space.move_agent(self, new_pos)
+
+    #метод для обчислення середнього напрямку групи агентів, щоб рух був більш організований
+    def get_average_direction(self):
+        sum_vector = np.zeros(2)
+        count = 0
+        for neighbor in self.neighbors:
+            if neighbor == self:
+                continue
+            distance = np.linalg.norm(self.pos - neighbor.pos)
+            if distance < self.cohesion_radius:
+                sum_vector += neighbor.direction
+                count += 1
+        if count > 0:
+            return sum_vector / count
+        return np.zeros(2)
+
+    #метод для обчислення середньої позиції сусідів, щоб вони тримались більш згуртовано
+    def get_cohesion(self):
+        sum_vector = np.zeros(2)
+        count = 0
+        for neighbor in self.neighbors:
+            if neighbor == self:
+                continue
+            distance = np.linalg.norm(self.pos - neighbor.pos)
+            if distance < self.avoid_radius:
+                sum_vector += neighbor.pos
+                count += 1
+        if count > 0:
+            center_of_mass = sum_vector / count
+            return center_of_mass - self.pos
+        return np.zeros(2)
 
 
 class BoidFlockers(mesa.Model):
@@ -119,9 +122,6 @@ class BoidFlockers(mesa.Model):
         self.make_agents()
 
     def make_agents(self):
-        """
-        Create self.population agents, with random positions and starting headings.
-        """
         for i in range(self.population):
             x = self.random.random() * self.space.x_max
             y = self.random.random() * self.space.y_max
@@ -134,13 +134,14 @@ class BoidFlockers(mesa.Model):
                 direction=direction,
                 vision=self.vision,
                 separation=self.separation,
-                **self.factors,
+                max_speed=1,
+                noise_factor=0.1,
+                crowd_radius=5,
+                cohesion_radius=10,
+                avoid_radius=5,
             )
             self.space.place_agent(boid, pos)
-
-            # Add the boid to the scheduler instead of a list
             self.schedule.add(boid)
 
     def step(self):
-        # Call the step method on each agent in the schedule
-        self.schedule.step()
+       self.schedule.step()
